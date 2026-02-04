@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Carte interactive – CA de Saint-Dié-des-Vosges</title>
+
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+
+  <!-- Turf pour centroids -->
+  <script src="https://unpkg.com/@turf/turf@6.5.0/turf.min.js"></script>
+
+  <style>
+    html, body { height: 100%; margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    #app { display: grid; grid-template-columns: 360px 1fr; height: 100%; }
+    #sidebar { padding: 14px; border-right: 1px solid #ddd; overflow: auto; }
+    #map { height: 100%; }
+    h1 { font-size: 16px; margin: 0 0 10px; }
+    .muted { color: #555; font-size: 13px; line-height: 1.35; }
+    .row { display: grid; grid-template-columns: 1fr; gap: 8px; margin: 12px 0; }
+    button { padding: 10px 12px; border: 1px solid #ccc; background: #fff; border-radius: 10px; cursor: pointer; }
+    button:hover { background: #f7f7f7; }
+    .legend { border: 1px solid #ddd; border-radius: 12px; padding: 10px; }
+    .legend-item { display: grid; grid-template-columns: 26px 1fr auto auto; gap: 8px; align-items: center; margin: 8px 0; }
+    .swatch { width: 22px; height: 22px; border-radius: 6px; border: 1px solid rgba(0,0,0,.2); }
+    input[type="text"] { width: 100%; padding: 8px 10px; border: 1px solid #ccc; border-radius: 10px; }
+    input[type="color"] { width: 44px; height: 34px; border: 1px solid #ccc; border-radius: 10px; padding: 0; background: #fff; }
+    .pill { display:inline-block; padding: 3px 8px; border-radius: 999px; border: 1px solid #ddd; font-size: 12px; color:#444; }
+    .hint { margin-top: 8px; font-size: 12px; color: #666; }
+    .hr { height: 1px; background: #eee; margin: 12px 0; }
+  </style>
+</head>
+
+<body>
+<div id="app">
+  <div id="sidebar">
+    <h1>Carte interactive – CA de Saint-Dié-des-Vosges</h1>
+    <div class="muted">
+      • Cliquez sur une commune pour changer sa couleur (cycle).<br/>
+      • Modifiez la légende (noms + couleurs).<br/>
+      • Sauvegardez localement ou exportez en GeoJSON.
+      <div class="hint">Contours via geo.api.gouv.fr (Etalab).</div>
+    </div>
+
+    <div class="row">
+      <button id="btnReset">Réinitialiser les couleurs</button>
+      <button id="btnExport">Exporter en GeoJSON</button>
+      <button id="btnZoom">Zoom sur l’agglo</button>
+      <button id="btnSave">Sauvegarder (navigateur)</button>
+      <button id="btnLoad">Recharger la sauvegarde</button>
+    </div>
+
+    <div class="hr"></div>
+
+    <div class="legend">
+      <div class="muted" style="margin-bottom:8px;">
+        Légende (ordre = ordre du cycle au clic)
+        <span class="pill" id="pillInfo"></span>
+      </div>
+      <div id="legendList"></div>
+      <button id="btnAddCat" style="margin-top:8px;">+ Ajouter une catégorie</button>
+      <div class="hint">Astuce : gardez “Non renseigné” en premier.</div>
+    </div>
+  </div>
+
+  <div id="map"></div>
+</div>
+
+<script>
+(() => {
+  const EPCI_CODE = "200071066"; // CA de Saint-Dié-des-Vosges
+  const STORAGE_KEY = "ca_saintdie_coloriage_v1";
+
+  let categories = [
+    { id: "none", label: "Non renseigné", color: "#ffffff" },
+    { id: "cat1", label: "Catégorie 1",   color: "#fde68a" },
+    { id: "cat2", label: "Catégorie 2",   color: "#a7f3d0" },
+    { id: "cat3", label: "Catégorie 3",   color: "#bfdbfe" },
+    { id: "cat4", label: "Catégorie 4",   color: "#fbcfe8" },
+  ];
+
+  const communeState = new Map();
+
+  const map = L.map('map', { zoomControl: true });
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19, attribution: '&copy; OpenStreetMap'
+  }).addTo(map);
+
+  let epciLayer = null, communesLayer = null, labelsLayer = L.layerGroup().addTo(map);
+
+  function getIdx(code){ return typeof communeState.get(code) === "number" ? communeState.get(code) : 0; }
+  function styleCommune(f){
+    const idx = getIdx(f.properties?.code);
+    const cat = categories[idx] || categories[0];
+    return { weight:1, color:"#333", opacity:.8, fillColor:cat.color, fillOpacity: cat.color==="#ffffff" ? .12 : .65 };
+  }
+  function nextIdx(i){ return (i+1) % categories.length; }
+
+  function popupHtml(f){
+    const nom=f.properties?.nom||"", code=f.properties?.code||"", cat=categories[getIdx(code)]||categories[0];
+    return `<b>${nom}</b><br/>Code INSEE : ${code}<br/>Catégorie : <b>${cat.label}</b>`;
+  }
+
+  function onEachCommune(f, layer){
+    const code=f.properties?.code;
+    layer.on('click', () => {
+      communeState.set(code, nextIdx(getIdx(code)));
+      layer.setStyle(styleCommune(f));
+      layer.bindPopup(popupHtml(f)).openPopup();
+      updateInfo();
+    });
+    layer.bindTooltip(`${f.properties?.nom} (${code})`, {sticky:true});
+    layer.bindPopup(popupHtml(f));
+  }
+
+  function addLabels(geo){
+    labelsLayer.clearLayers();
+    geo.features.forEach(f=>{
+      const c=f.properties?.centre?.coordinates;
+      let pt=null;
+      if(c&&c.length===2) pt={lng:c[0],lat:c[1]};
+      else { try{ const cc=turf.centroid(f).geometry.coordinates; pt={lng:cc[0],lat:cc[1]}; }catch(e){} }
+      if(!pt) return;
+      const icon=L.divIcon({className:'lbl',html:`<div style="font-size:12px;padding:2px 4px;background:rgba(255,255,255,.75);border:1px solid rgba(0,0,0,.15);border-radius:8px;">${f.properties?.nom}</div>`});
+      L.marker([pt.lat,pt.lng],{icon,interactive:false}).addTo(labelsLayer);
+    });
+  }
+
+  const legendList=document.getElementById("legendList"), pillInfo=document.getElementById("pillInfo");
+  function updateInfo(){ pillInfo.textContent = `${Array.from(communeState.values()).filter(v=>v!==0).length} commune(s) coloriée(s)`; }
+
+  function renderLegend(){
+    legendList.innerHTML="";
+    categories.forEach((cat,idx)=>{
+      const row=document.createElement("div"); row.className="legend-item";
+      const sw=document.createElement("div"); sw.className="swatch"; sw.style.background=cat.color;
+      const name=document.createElement("input"); name.type="text"; name.value=cat.label; name.oninput=()=>{cat.label=name.value; refreshPopups();};
+      const col=document.createElement("input"); col.type="color"; col.value=cat.color; col.oninput=()=>{cat.color=col.value; sw.style.background=cat.color; refresh();};
+      const del=document.createElement("button"); del.textContent = idx===0?"—":"Suppr."; del.disabled=idx===0; del.onclick=()=>{
+        if(idx===0) return;
+        categories.splice(idx,1);
+        for(const [k,v] of communeState.entries()){ if(v===idx) communeState.set(k,0); else if(v>idx) communeState.set(k,v-1); }
+        refresh(); refreshPopups();
+      };
+      row.append(sw,name,col,del); legendList.appendChild(row);
+    });
+  }
+
+  function refresh(){ if(communesLayer) communesLayer.setStyle(styleCommune); renderLegend(); updateInfo(); }
+  function refreshPopups(){ if(!communesLayer) return; communesLayer.eachLayer(l=> l.feature && l.bindPopup(popupHtml(l.feature))); }
+
+  document.getElementById("btnAddCat").onclick=()=>{ const n=categories.length+1; categories.push({id:"cat"+n,label:"Catégorie "+n,color:"#e5e7eb"}); refresh(); refreshPopups(); };
+  document.getElementById("btnReset").onclick=()=>{ communeState.clear(); refresh(); refreshPopups(); };
+  document.getElementById("btnZoom").onclick=()=>{ (epciLayer||communesLayer) && map.fitBounds((epciLayer||communesLayer).getBounds(),{padding:[20,20]}); };
+
+  document.getElementById("btnSave").onclick=()=>{
+    const payload={ categories, state:Object.fromEntries(communeState.entries()), savedAt:new Date().toISOString() };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(payload)); alert("Sauvegarde effectuée.");
+  };
+  document.getElementById("btnLoad").onclick=()=>{
+    const raw=localStorage.getItem(STORAGE_KEY); if(!raw) return alert("Aucune sauvegarde.");
+    const p=JSON.parse(raw); if(Array.isArray(p.categories)) categories=p.categories;
+    communeState.clear(); if(p.state) Object.entries(p.state).forEach(([k,v])=> typeof v==="number" && communeState.set(k,v));
+    refresh(); refreshPopups(); alert("Sauvegarde rechargée.");
+  };
+  document.getElementById("btnExport").onclick=()=>{
+    if(!window.__communesGeoJSON) return alert("Données pas encore chargées.");
+    const out=JSON.parse(JSON.stringify(window.__communesGeoJSON));
+    out.features.forEach(f=>{
+      const code=f.properties?.code, idx=getIdx(code), cat=categories[idx]||categories[0];
+      f.properties.categoryIndex=idx; f.properties.categoryId=cat.id; f.properties.categoryLabel=cat.label;
+    });
+    out.__legend=categories;
+    const blob=new Blob([JSON.stringify(out,null,2)],{type:"application/geo+json"});
+    const a=document.createElement("a"); a.href=URL.createObjectURL(blob);
+    a.download=`CA_SaintDie_coloriage_${new Date().toISOString().slice(0,10)}.geojson`; a.click(); URL.revokeObjectURL(a.href);
+  };
+
+  const epciUrl = `https://geo.api.gouv.fr/epcis/${EPCI_CODE}?format=geojson&geometry=contour`;
+  const communesUrl = `https://geo.api.gouv.fr/epcis/${EPCI_CODE}/communes?fields=nom,code,centre&format=geojson&geometry=contour`;
+
+  async function load(){
+    renderLegend(); updateInfo(); map.setView([48.28,6.95],10);
+    const [e,c]=await Promise.all([fetch(epciUrl),fetch(communesUrl)]);
+    const epciGeo=await e.json(), communesGeo=await c.json(); window.__communesGeoJSON=communesGeo;
+    epciLayer=L.geoJSON(epciGeo,{style:{color:"#111",weight:3,fillOpacity:0}}).addTo(map);
+    communesLayer=L.geoJSON(communesGeo,{style:styleCommune,onEachFeature:onEachCommune}).addTo(map);
+    addLabels(communesGeo); map.fitBounds(epciLayer.getBounds(),{padding:[20,20]});
+  }
+  load().catch(err=>{ console.error(err); alert("Erreur de chargement des données."); });
+})();
+</script>
+</body>
+</html>
