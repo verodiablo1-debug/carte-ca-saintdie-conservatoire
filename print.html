@@ -33,10 +33,9 @@
       gap: 6mm;
     }
 
-    /* Carte : hauteur optimisée pour A4 portrait */
     #map {
       width: 100%;
-      height: 185mm;     /* Ajusté pour laisser place à la légende */
+      height: 185mm;     /* hauteur optimisée pour A4 portrait */
       border: 1px solid #ddd;
       border-radius: 6px;
       overflow: hidden;
@@ -58,7 +57,6 @@
 
     .note { font-size: 11px; color: #555; margin-top: 4mm; }
 
-    /* Boutons à l’écran (pas dans le PDF) */
     .actions { margin-top: 6mm; display: flex; gap: 8px; flex-wrap: wrap; }
     button, a.btn {
       padding: 10px 12px;
@@ -72,13 +70,9 @@
     }
     button:hover, a.btn:hover { background: #f7f7f7; }
 
-    /* Impression */
     @page { size: A4 portrait; margin: 0; }
     @media print {
       .actions { display: none !important; }
-      body { background: #fff; }
-      .page { padding: var(--pad); }
-      /* Leaflet : on évite des ombres/tuiles coupées */
       .leaflet-control-container { display: none !important; }
     }
   </style>
@@ -101,8 +95,8 @@
         <p class="legend-title">Légende</p>
         <div class="legend-grid" id="legendGrid"></div>
         <div class="note">
-          Astuce : cette page reprend vos couleurs/étiquettes depuis la sauvegarde du navigateur (bouton “Sauvegarder” sur la carte principale).
-          Si rien n’apparaît, ouvrez d’abord la carte principale, rechargez votre sauvegarde, puis revenez ici.
+          Cette page reprend vos couleurs/étiquettes depuis la sauvegarde du navigateur (bouton “Sauvegarder” sur la carte principale).
+          Si vos couleurs ne sont pas là, ouvrez la carte principale → “Recharger la sauvegarde”, puis revenez ici.
         </div>
       </div>
 
@@ -115,16 +109,14 @@
 
 <script>
 (() => {
-  // Doit correspondre à la carte principale
   const EPCI_CODE = "200071066";
   const STORAGE_KEY = "ca_saintdie_coloriage_v1";
 
   // Date
   const d = new Date();
-  document.getElementById("dateLine").textContent =
-    "Édité le " + d.toLocaleDateString("fr-FR");
+  document.getElementById("dateLine").textContent = "Édité le " + d.toLocaleDateString("fr-FR");
 
-  // Récupération sauvegarde (légende + état couleurs)
+  // Sauvegarde (catégories + état)
   let categories = [
     { id: "none", label: "Non renseigné", color: "#ffffff" },
     { id: "cat1", label: "Catégorie 1",   color: "#fde68a" },
@@ -151,8 +143,7 @@
   function renderLegend() {
     const grid = document.getElementById("legendGrid");
     grid.innerHTML = "";
-    categories.forEach((cat, idx) => {
-      // on affiche toutes les catégories, y compris "Non renseigné"
+    categories.forEach(cat => {
       const item = document.createElement("div");
       item.className = "legend-item";
       const sw = document.createElement("div");
@@ -165,24 +156,6 @@
       grid.appendChild(item);
     });
   }
-
-  // Carte Leaflet (fixe, sans interactions inutiles pour l’impression)
-  const map = L.map('map', {
-    zoomControl: false,
-    dragging: false,
-    scrollWheelZoom: false,
-    doubleClickZoom: false,
-    boxZoom: false,
-    keyboard: false,
-    tap: false,
-    touchZoom: false
-  });
-
-  // Fond OSM
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19,
-    attribution: '&copy; OpenStreetMap'
-  }).addTo(map);
 
   function getIdx(code) {
     const v = communeState.get(code);
@@ -202,9 +175,25 @@
     };
   }
 
+  // Carte Leaflet (stable pour impression)
+  const map = L.map('map', {
+    zoomControl: false,
+    dragging: false,
+    scrollWheelZoom: false,
+    doubleClickZoom: false,
+    boxZoom: false,
+    keyboard: false,
+    tap: false,
+    touchZoom: false
+  });
+
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; OpenStreetMap'
+  }).addTo(map);
+
   const epciUrl = `https://geo.api.gouv.fr/epcis/${EPCI_CODE}?format=geojson&geometry=contour`;
   const communesUrl = `https://geo.api.gouv.fr/epcis/${EPCI_CODE}/communes?fields=nom,code,centre&format=geojson&geometry=contour`;
-
 
   async function load() {
     loadSaved();
@@ -216,53 +205,46 @@
 
     const epciGeo = await eRes.json();
     const communesGeo = await cRes.json();
-  // Labels (noms des communes) — robuste même sans "centre"
-const labelsLayer = L.layerGroup().addTo(map);
-
-communesGeo.features.forEach(f => {
-  const nom = f.properties?.nom;
-  if (!nom) return;
-
-  // 1) centre renvoyé par l’API (si dispo)
-  const centre = f.properties?.centre?.coordinates; // [lng, lat]
-  let latlng = null;
-
-  if (centre && centre.length === 2) {
-    latlng = L.latLng(centre[1], centre[0]);
-  } else {
-    // 2) fallback : centre calculé depuis le polygone (Leaflet)
-    const tmp = L.geoJSON(f);
-    latlng = tmp.getBounds().getCenter();
-  }
-
-  const icon = L.divIcon({
-    className: "commune-label",
-    html: `<div style="
-      font-size: 9px;
-      line-height: 1.1;
-      padding: 1px 3px;
-      background: rgba(255,255,255,.80);
-      border: 1px solid rgba(0,0,0,.22);
-      border-radius: 6px;
-      white-space: nowrap;
-    ">${nom}</div>`
-  });
-
-  L.marker(latlng, { icon, interactive: false }).addTo(labelsLayer);
-});
-
-
-  L.marker([centre[1], centre[0]], { icon, interactive: false }).addTo(labelsLayer);
-});
-
 
     const epciLayer = L.geoJSON(epciGeo, { style: { color: "#111", weight: 3, fillOpacity: 0 } }).addTo(map);
     L.geoJSON(communesGeo, { style: styleCommune }).addTo(map);
 
-    // Cadrage parfait sur l’agglo (pas de “trop grand / trop petit”)
+    // Labels (noms) — robuste
+    const labelsLayer = L.layerGroup().addTo(map);
+    communesGeo.features.forEach(f => {
+      const nom = f.properties?.nom;
+      if (!nom) return;
+
+      const centre = f.properties?.centre?.coordinates; // [lng, lat]
+      let latlng = null;
+
+      if (centre && centre.length === 2) {
+        latlng = L.latLng(centre[1], centre[0]);
+      } else {
+        const tmp = L.geoJSON(f);
+        latlng = tmp.getBounds().getCenter();
+      }
+
+      const icon = L.divIcon({
+        className: "commune-label",
+        html: `<div style="
+          font-size: 9px;
+          line-height: 1.1;
+          padding: 1px 3px;
+          background: rgba(255,255,255,.80);
+          border: 1px solid rgba(0,0,0,.22);
+          border-radius: 6px;
+          white-space: nowrap;
+        ">${nom}</div>`
+      });
+
+      L.marker(latlng, { icon, interactive: false }).addTo(labelsLayer);
+    });
+
+    // Cadrage
     map.fitBounds(epciLayer.getBounds(), { padding: [10, 10] });
 
-    // Important : forcer Leaflet à recalculer la taille (sinon carte parfois “coupée” en PDF)
+    // Important pour l’impression (Leaflet aime bien ça)
     setTimeout(() => {
       map.invalidateSize();
       map.fitBounds(epciLayer.getBounds(), { padding: [10, 10] });
@@ -271,11 +253,10 @@ communesGeo.features.forEach(f => {
 
   load().catch(err => {
     console.error(err);
-    alert("Impossible de charger la carte d’impression. Ouvrez d’abord la carte principale puis revenez ici.");
+    alert("La carte d’impression n’a pas pu se charger. (Voir console F12)");
   });
 
   document.getElementById("btnPrint").addEventListener("click", () => {
-    // Petit délai pour laisser Leaflet finir d’afficher les tuiles avant le PDF
     setTimeout(() => window.print(), 300);
   });
 })();
