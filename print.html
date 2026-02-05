@@ -203,7 +203,8 @@
   }
 
   const epciUrl = `https://geo.api.gouv.fr/epcis/${EPCI_CODE}?format=geojson&geometry=contour`;
-  const communesUrl = `https://geo.api.gouv.fr/epcis/${EPCI_CODE}/communes?fields=nom,code&format=geojson&geometry=contour`;
+  const communesUrl = `https://geo.api.gouv.fr/epcis/${EPCI_CODE}/communes?fields=nom,code,centre&format=geojson&geometry=contour`;
+
 
   async function load() {
     loadSaved();
@@ -215,6 +216,30 @@
 
     const epciGeo = await eRes.json();
     const communesGeo = await cRes.json();
+    // Labels (noms des communes)
+const labelsLayer = L.layerGroup().addTo(map);
+
+communesGeo.features.forEach(f => {
+  const nom = f.properties?.nom;
+  const centre = f.properties?.centre?.coordinates; // [lng, lat]
+  if (!nom || !centre || centre.length !== 2) return;
+
+  const icon = L.divIcon({
+    className: "commune-label",
+    html: `<div style="
+      font-size: 9px;
+      line-height: 1.1;
+      padding: 1px 3px;
+      background: rgba(255,255,255,.75);
+      border: 1px solid rgba(0,0,0,.18);
+      border-radius: 6px;
+      white-space: nowrap;
+    ">${nom}</div>`
+  });
+
+  L.marker([centre[1], centre[0]], { icon, interactive: false }).addTo(labelsLayer);
+});
+
 
     const epciLayer = L.geoJSON(epciGeo, { style: { color: "#111", weight: 3, fillOpacity: 0 } }).addTo(map);
     L.geoJSON(communesGeo, { style: styleCommune }).addTo(map);
