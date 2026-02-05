@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Impression A4 – CA de Saint-Dié-des-Vosges</title>
+
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+
+  <style>
+    :root { --pad: 10mm; }
+
+    html, body { margin: 0; padding: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; color: #111; }
+    .page {
+      width: 210mm;            /* A4 */
+      min-height: 297mm;       /* A4 */
+      box-sizing: border-box;
+      padding: var(--pad);
+    }
+
+    header { display: flex; justify-content: space-between; align-items: baseline; gap: 10mm; }
+    h1 { margin: 0; font-size: 16px; }
+    .meta { font-size: 12px; color: #444; text-align: right; }
+
+    .layout {
+      margin-top: 6mm;
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 6mm;
+    }
+
+    /* Carte : hauteur optimisée pour A4 portrait */
+    #map {
+      width: 100%;
+      height: 185mm;     /* Ajusté pour laisser place à la légende */
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      overflow: hidden;
+    }
+
+    .legend {
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      padding: 6mm;
+    }
+    .legend-title { font-weight: 600; margin: 0 0 4mm; font-size: 13px; }
+    .legend-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 3mm 8mm;
+    }
+    .legend-item { display: grid; grid-template-columns: 10mm 1fr; gap: 3mm; align-items: center; font-size: 12px; }
+    .swatch { width: 10mm; height: 6mm; border: 1px solid rgba(0,0,0,.25); border-radius: 2mm; }
+
+    .note { font-size: 11px; color: #555; margin-top: 4mm; }
+
+    /* Boutons à l’écran (pas dans le PDF) */
+    .actions { margin-top: 6mm; display: flex; gap: 8px; flex-wrap: wrap; }
+    button, a.btn {
+      padding: 10px 12px;
+      border: 1px solid #ccc;
+      background: #fff;
+      border-radius: 10px;
+      cursor: pointer;
+      text-decoration: none;
+      color: inherit;
+      font-size: 14px;
+    }
+    button:hover, a.btn:hover { background: #f7f7f7; }
+
+    /* Impression */
+    @page { size: A4 portrait; margin: 0; }
+    @media print {
+      .actions { display: none !important; }
+      body { background: #fff; }
+      .page { padding: var(--pad); }
+      /* Leaflet : on évite des ombres/tuiles coupées */
+      .leaflet-control-container { display: none !important; }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="page">
+    <header>
+      <h1>Communauté d’agglomération de Saint-Dié-des-Vosges – Carte</h1>
+      <div class="meta">
+        <div id="dateLine"></div>
+        <div style="margin-top:2mm;">Format : A4 portrait</div>
+      </div>
+    </header>
+
+    <div class="layout">
+      <div id="map"></div>
+
+      <div class="legend">
+        <p class="legend-title">Légende</p>
+        <div class="legend-grid" id="legendGrid"></div>
+        <div class="note">
+          Astuce : cette page reprend vos couleurs/étiquettes depuis la sauvegarde du navigateur (bouton “Sauvegarder” sur la carte principale).
+          Si rien n’apparaît, ouvrez d’abord la carte principale, rechargez votre sauvegarde, puis revenez ici.
+        </div>
+      </div>
+
+      <div class="actions">
+        <button id="btnPrint">Imprimer / Enregistrer en PDF</button>
+        <a class="btn" href="./">Retour à la carte</a>
+      </div>
+    </div>
+  </div>
+
+<script>
+(() => {
+  // Doit correspondre à la carte principale
+  const EPCI_CODE = "200071066";
+  const STORAGE_KEY = "ca_saintdie_coloriage_v1";
+
+  // Date
+  const d = new Date();
+  document.getElementById("dateLine").textContent =
+    "Édité le " + d.toLocaleDateString("fr-FR");
+
+  // Récupération sauvegarde (légende + état couleurs)
+  let categories = [
+    { id: "none", label: "Non renseigné", color: "#ffffff" },
+    { id: "cat1", label: "Catégorie 1",   color: "#fde68a" },
+    { id: "cat2", label: "Catégorie 2",   color: "#a7f3d0" },
+    { id: "cat3", label: "Catégorie 3",   color: "#bfdbfe" },
+    { id: "cat4", label: "Catégorie 4",   color: "#fbcfe8" },
+  ];
+  const communeState = new Map();
+
+  function loadSaved() {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return;
+    try {
+      const payload = JSON.parse(raw);
+      if (Array.isArray(payload.categories)) categories = payload.categories;
+      if (payload.state && typeof payload.state === "object") {
+        Object.entries(payload.state).forEach(([k, v]) => {
+          if (typeof v === "number") communeState.set(k, v);
+        });
+      }
+    } catch (e) {}
+  }
+
+  function renderLegend() {
+    const grid = document.getElementById("legendGrid");
+    grid.innerHTML = "";
+    categories.forEach((cat, idx) => {
+      // on affiche toutes les catégories, y compris "Non renseigné"
+      const item = document.createElement("div");
+      item.className = "legend-item";
+      const sw = document.createElement("div");
+      sw.className = "swatch";
+      sw.style.background = cat.color;
+      const lab = document.createElement("div");
+      lab.textContent = cat.label;
+      item.appendChild(sw);
+      item.appendChild(lab);
+      grid.appendChild(item);
+    });
+  }
+
+  // Carte Leaflet (fixe, sans interactions inutiles pour l’impression)
+  const map = L.map('map', {
+    zoomControl: false,
+    dragging: false,
+    scrollWheelZoom: false,
+    doubleClickZoom: false,
+    boxZoom: false,
+    keyboard: false,
+    tap: false,
+    touchZoom: false
+  });
+
+  // Fond OSM
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; OpenStreetMap'
+  }).addTo(map);
+
+  function getIdx(code) {
+    const v = communeState.get(code);
+    return (typeof v === "number") ? v : 0;
+  }
+
+  function styleCommune(feature) {
+    const code = feature.properties?.code;
+    const idx = getIdx(code);
+    const cat = categories[idx] ?? categories[0];
+    return {
+      weight: 1,
+      color: "#333",
+      opacity: 0.85,
+      fillColor: cat.color,
+      fillOpacity: (String(cat.color).toLowerCase() === "#ffffff") ? 0.08 : 0.70
+    };
+  }
+
+  const epciUrl = `https://geo.api.gouv.fr/epcis/${EPCI_CODE}?format=geojson&geometry=contour`;
+  const communesUrl = `https://geo.api.gouv.fr/epcis/${EPCI_CODE}/communes?fields=nom,code&format=geojson&geometry=contour`;
+
+  async function load() {
+    loadSaved();
+    renderLegend();
+
+    const [eRes, cRes] = await Promise.all([fetch(epciUrl), fetch(communesUrl)]);
+    if (!eRes.ok) throw new Error("Erreur chargement EPCI");
+    if (!cRes.ok) throw new Error("Erreur chargement communes");
+
+    const epciGeo = await eRes.json();
+    const communesGeo = await cRes.json();
+
+    const epciLayer = L.geoJSON(epciGeo, { style: { color: "#111", weight: 3, fillOpacity: 0 } }).addTo(map);
+    L.geoJSON(communesGeo, { style: styleCommune }).addTo(map);
+
+    // Cadrage parfait sur l’agglo (pas de “trop grand / trop petit”)
+    map.fitBounds(epciLayer.getBounds(), { padding: [10, 10] });
+
+    // Important : forcer Leaflet à recalculer la taille (sinon carte parfois “coupée” en PDF)
+    setTimeout(() => {
+      map.invalidateSize();
+      map.fitBounds(epciLayer.getBounds(), { padding: [10, 10] });
+    }, 250);
+  }
+
+  load().catch(err => {
+    console.error(err);
+    alert("Impossible de charger la carte d’impression. Ouvrez d’abord la carte principale puis revenez ici.");
+  });
+
+  document.getElementById("btnPrint").addEventListener("click", () => {
+    // Petit délai pour laisser Leaflet finir d’afficher les tuiles avant le PDF
+    setTimeout(() => window.print(), 300);
+  });
+})();
+</script>
+</body>
+</html>
