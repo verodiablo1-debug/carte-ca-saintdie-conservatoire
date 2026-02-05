@@ -209,11 +209,85 @@
     const epciLayer = L.geoJSON(epciGeo, { style: { color: "#111", weight: 3, fillOpacity: 0 } }).addTo(map);
     L.geoJSON(communesGeo, { style: styleCommune }).addTo(map);
 
-    // Labels (noms) — robuste
-    const labelsLayer = L.layerGroup().addTo(map);
-    communesGeo.features.forEach(f => {
-      const nom = f.properties?.nom;
-      if (!nom) return;
+  // Labels (noms) — évite les chevauchements (collision)
+const labelsLayer = L.layerGroup().addTo(map);
+
+// Un petit "mesureur" invisible pour connaître la taille du label en pixels
+const measurer = document.createElement("div");
+measurer.style.position = "absolute";
+measurer.style.visibility = "hidden";
+measurer.style.whiteSpace = "nowrap";
+measurer.style.fontSize = "7.5px";
+measurer.style.lineHeight = "1.0";
+measurer.style.padding = "0.5px 2px";
+measurer.style.border = "1px solid rgba(0,0,0,.22)";
+document.body.appendChild(measurer);
+
+// Liste de rectangles déjà utilisés (en pixels, dans la carte)
+const placed = [];
+const PAD = 2; // marge anti-collision (px)
+
+function overlaps(r1, r2) {
+  return !(r2.x > r1.x + r1.w + PAD ||
+           r2.x + r2.w + PAD < r1.x ||
+           r2.y > r1.y + r1.h + PAD ||
+           r2.y + r2.h + PAD < r1.y);
+}
+
+communesGeo.features.forEach(f => {
+  const nom = f.properties?.nom;
+  if (!nom) return;
+
+  // Centre (API) ou fallback (bounds center)
+  const centre = f.properties?.centre?.coordinates; // [lng, lat]
+  let latlng;
+  if (centre && centre.length === 2) {
+    latlng = L.latLng(centre[1], centre[0]);
+  } else {
+    latlng = L.geoJSON(f).getBounds().getCenter();
+  }
+
+  // Position en pixels dans le conteneur de la carte
+  const p = map.latLngToContainerPoint(latlng);
+
+  // Mesure la taille du label
+  measurer.textContent = nom;
+  const w = measurer.offsetWidth;
+  const h = measurer.offsetHeight;
+
+  // Rectangle centré sur le point
+  const rect = { x: p.x - w / 2, y: p.y - h / 2, w, h };
+
+  // Si ça dépasse trop la carte, on évite (optionnel mais utile)
+  if (rect.x < 0 || rect.y < 0) return;
+
+  // Vérifie collisions
+  for (const r of placed) {
+    if (overlaps(rect, r)) return; // on saute ce label
+  }
+
+  // Place le label
+  placed.push(rect);
+
+  const icon = L.divIcon({
+    className: "commune-label",
+    html: `<div style="
+      font-size: 7.5px;
+      line-height: 1.0;
+      padding: 0.5px 2px;
+      background: rgba(255,255,255,.60);
+      border: 1px solid rgba(0,0,0,.22);
+      border-radius: 6px;
+      white-space: nowrap;
+    ">${nom}</div>`
+  });
+
+  L.marker(latlng, { icon, interactive: false }).addTo(labelsLayer);
+});
+
+// Nettoyage (optionnel)
+document.body.removeChild(measurer);
+
 
       const centre = f.properties?.centre?.coordinates; // [lng, lat]
       let latlng = null;
