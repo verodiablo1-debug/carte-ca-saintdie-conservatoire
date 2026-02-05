@@ -216,13 +216,24 @@
 
     const epciGeo = await eRes.json();
     const communesGeo = await cRes.json();
-    // Labels (noms des communes)
+  // Labels (noms des communes) — robuste même sans "centre"
 const labelsLayer = L.layerGroup().addTo(map);
 
 communesGeo.features.forEach(f => {
   const nom = f.properties?.nom;
+  if (!nom) return;
+
+  // 1) centre renvoyé par l’API (si dispo)
   const centre = f.properties?.centre?.coordinates; // [lng, lat]
-  if (!nom || !centre || centre.length !== 2) return;
+  let latlng = null;
+
+  if (centre && centre.length === 2) {
+    latlng = L.latLng(centre[1], centre[0]);
+  } else {
+    // 2) fallback : centre calculé depuis le polygone (Leaflet)
+    const tmp = L.geoJSON(f);
+    latlng = tmp.getBounds().getCenter();
+  }
 
   const icon = L.divIcon({
     className: "commune-label",
@@ -230,12 +241,16 @@ communesGeo.features.forEach(f => {
       font-size: 9px;
       line-height: 1.1;
       padding: 1px 3px;
-      background: rgba(255,255,255,.75);
-      border: 1px solid rgba(0,0,0,.18);
+      background: rgba(255,255,255,.80);
+      border: 1px solid rgba(0,0,0,.22);
       border-radius: 6px;
       white-space: nowrap;
     ">${nom}</div>`
   });
+
+  L.marker(latlng, { icon, interactive: false }).addTo(labelsLayer);
+});
+
 
   L.marker([centre[1], centre[0]], { icon, interactive: false }).addTo(labelsLayer);
 });
